@@ -24,7 +24,7 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config" / "menu.json"
 STATE_PATH = BASE_DIR / "config" / "storage_state.json"
 
-ADD_TO_CART_LABELS = ["加入購物車", "Add to cart", "新增"]
+ADD_TO_CART_LABELS = ["加入購物車", "Add to cart", "加入訂單", "Add to order", "新增"]
 CART_LABELS = ["查看購物車", "View cart", "購物車"]
 QUANTITY_PLUS_LABELS = ["+", "增加數量"]
 
@@ -50,11 +50,26 @@ def click_first_match(page: Page, labels: list[str], role: str = "button", timeo
 
 
 def add_item_to_cart(page: Page, item: dict) -> None:
-    name = item["name"]
-    quantity = int(item.get("quantity", 1))
-    print(f"正在加入餐點: {name} x{quantity}")
+    """加入一項餐點到購物車。
 
-    page.get_by_text(name, exact=False).first.click(timeout=10000)
+    item 可以是兩種形式之一：
+    - {"url": "<餐點的直接連結>", "quantity": n}：直接導到該餐點頁面再加入購物車
+    - {"name": "<餐點名稱關鍵字>", "quantity": n}：在目前頁面（餐廳頁）用文字搜尋該餐點
+    """
+    quantity = int(item.get("quantity", 1))
+    url = item.get("url")
+    name = item.get("name")
+
+    if url:
+        print(f"正在開啟餐點連結並加入購物車: {url} x{quantity}")
+        page.goto(url)
+        page.wait_for_load_state("networkidle")
+    elif name:
+        print(f"正在加入餐點: {name} x{quantity}")
+        page.get_by_text(name, exact=False).first.click(timeout=10000)
+    else:
+        raise ValueError("設定檔中的餐點項目需要至少包含 'url' 或 'name'")
+
     click_first_match(page, ADD_TO_CART_LABELS)
 
     for _ in range(quantity - 1):
@@ -87,14 +102,17 @@ def run_order(playwright) -> None:
     context = browser.new_context(storage_state=str(STATE_PATH))
     page = context.new_page()
 
-    page.goto(config["restaurant_url"])
-    page.wait_for_load_state("networkidle")
+    restaurant_url = config.get("restaurant_url")
+    if restaurant_url:
+        page.goto(restaurant_url)
+        page.wait_for_load_state("networkidle")
 
     for item in config["items"]:
         try:
             add_item_to_cart(page, item)
         except Exception as exc:  # noqa: BLE001 - 單項失敗不應中斷整個流程
-            print(f"加入「{item['name']}」失敗，請手動加入。錯誤: {exc}")
+            label = item.get("name") or item.get("url")
+            print(f"加入「{label}」失敗，請手動加入。錯誤: {exc}")
 
     try:
         click_first_match(page, CART_LABELS, role="link")

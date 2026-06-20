@@ -3,6 +3,7 @@ __pycache__/
 venv/
 .venv/
 
-# 個人訂餐設定與 Uber Eats 登入狀態（含敏感資訊，不應進版控）
-config/menu.json
+# Uber Eats 登入狀態與 Google OAuth 憑證/權杖（含敏感資訊，不應進版控）
 config/storage_state.json
+config/google_credentials.json
+config/google_token.json
