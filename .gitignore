@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# 個人訂餐設定與 Uber Eats 登入狀態（含敏感資訊，不應進版控）
+config/menu.json
+config/storage_state.json

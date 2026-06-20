@@ -1,0 +1,7 @@
+{
+  "restaurant_url": "https://www.ubereats.com/tw/store/REPLACE_WITH_YOUR_RESTAURANT_ID",
+  "items": [
+    { "name": "招牌雞腿便當", "quantity": 1 },
+    { "name": "可口可樂", "quantity": 1 }
+  ]
+}
