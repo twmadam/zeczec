@@ -1,0 +1,13 @@
+{
+  "calendar": {
+    "keyword": "居家",
+    "calendar_id": "primary"
+  },
+  "order_time": "11:45",
+  "restaurant_url": "https://www.ubereats.com/tw/store/REPLACE_WITH_YOUR_RESTAURANT_ID",
+  "items": [
+    { "url": "REPLACE_WITH_DIRECT_ITEM_LINK_IF_YOU_HAVE_ONE", "quantity": 1 },
+    { "name": "招牌雞腿便當", "quantity": 1 },
+    { "name": "可口可樂", "quantity": 1 }
+  ]
+}
