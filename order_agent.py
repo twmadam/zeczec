@@ -15,7 +15,11 @@ GitHub Actions 之類的無頭雲端環境執行，因為人工付款這一步�
 
 import argparse
 import json
+import logging
+import os
+import smtplib
 import sys
+from email.message import EmailMessage
 from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
@@ -23,10 +27,52 @@ from playwright.sync_api import Page, sync_playwright
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config" / "menu.json"
 STATE_PATH = BASE_DIR / "config" / "storage_state.json"
+LOG_PATH = BASE_DIR / "logs" / "order_agent.log"
 
 ADD_TO_CART_LABELS = ["加入購物車", "Add to cart", "加入訂單", "Add to order", "新增"]
 CART_LABELS = ["查看購物車", "View cart", "購物車"]
 QUANTITY_PLUS_LABELS = ["+", "增加數量"]
+
+
+def _setup_logging() -> logging.Logger:
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger("order_agent")
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.DEBUG)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    fh = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    fh.setFormatter(fmt)
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    logger.addHandler(fh)
+    logger.addHandler(sh)
+    return logger
+
+
+log = _setup_logging()
+
+
+def send_failure_email(subject: str, body: str) -> None:
+    """寄送失敗通知信。若環境變數未設定則只記 log，不拋出例外。"""
+    sender = os.environ.get("SENDER_EMAIL")
+    password = os.environ.get("SENDER_PASSWORD")
+    receiver = os.environ.get("RECEIVER_EMAIL")
+    if not all([sender, password, receiver]):
+        log.warning("未設定 SENDER_EMAIL / SENDER_PASSWORD / RECEIVER_EMAIL，略過寄送失敗通知信。")
+        return
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = f"[自動訂餐] {subject}"
+        msg["From"] = sender
+        msg["To"] = receiver
+        msg.set_content(body)
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(sender, password)
+            smtp.send_message(msg)
+        log.info("失敗通知信已寄出至 %s", receiver)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("寄送失敗通知信時發生錯誤: %s", exc)
 
 
 def load_config() -> dict:
@@ -44,7 +90,7 @@ def click_first_match(page: Page, labels: list[str], role: str = "button", timeo
         try:
             page.get_by_role(role, name=label).first.click(timeout=timeout)
             return
-        except Exception as exc:  # noqa: BLE001 - 嘗試下一個候選文字
+        except Exception as exc:  # noqa: BLE001
             last_error = exc
     raise RuntimeError(f"找不到符合的按鈕（嘗試過: {labels}）") from last_error
 
@@ -61,11 +107,11 @@ def add_item_to_cart(page: Page, item: dict) -> None:
     name = item.get("name")
 
     if url:
-        print(f"正在開啟餐點連結並加入購物車: {url} x{quantity}")
+        log.info("開啟餐點連結: %s x%d", url, quantity)
         page.goto(url)
         page.wait_for_load_state("networkidle")
     elif name:
-        print(f"正在加入餐點: {name} x{quantity}")
+        log.info("搜尋並加入餐點: %s x%d", name, quantity)
         page.get_by_text(name, exact=False).first.click(timeout=10000)
     else:
         raise ValueError("設定檔中的餐點項目需要至少包含 'url' 或 'name'")
@@ -76,6 +122,7 @@ def add_item_to_cart(page: Page, item: dict) -> None:
         click_first_match(page, QUANTITY_PLUS_LABELS, timeout=3000)
 
     page.keyboard.press("Escape")
+    log.info("加入購物車成功")
 
 
 def login(playwright) -> None:
@@ -90,39 +137,59 @@ def login(playwright) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     context.storage_state(path=str(STATE_PATH))
     browser.close()
-    print(f"登入狀態已儲存到 {STATE_PATH}")
+    log.info("Uber Eats 登入狀態已儲存到 %s", STATE_PATH)
 
 
 def run_order(playwright) -> None:
     if not STATE_PATH.exists():
-        sys.exit("尚未登入，請先執行: python order_agent.py --login")
+        log.error("尚未儲存 Uber Eats 登入狀態，請先執行: python order_agent.py --login")
+        sys.exit(1)
 
     config = load_config()
+    log.info("=== 開始執行訂餐流程 ===")
+
     browser = playwright.chromium.launch(headless=False)
     context = browser.new_context(storage_state=str(STATE_PATH))
     page = context.new_page()
 
+    failures: list[str] = []
+
     restaurant_url = config.get("restaurant_url")
     if restaurant_url:
+        log.info("導向餐廳頁面: %s", restaurant_url)
         page.goto(restaurant_url)
         page.wait_for_load_state("networkidle")
 
     for item in config["items"]:
         try:
             add_item_to_cart(page, item)
-        except Exception as exc:  # noqa: BLE001 - 單項失敗不應中斷整個流程
+        except Exception as exc:  # noqa: BLE001
             label = item.get("name") or item.get("url")
-            print(f"加入「{label}」失敗，請手動加入。錯誤: {exc}")
+            log.error("加入「%s」失敗: %s", label, exc)
+            failures.append(f"「{label}」: {exc}")
+
+    if failures:
+        detail = "\n".join(failures)
+        send_failure_email(
+            "部分餐點加入購物車失敗，請手動補訂",
+            f"以下餐點自動加入購物車時失敗，請手動開啟 Uber Eats 補訂：\n\n{detail}\n\n"
+            f"完整 log 請查看：{LOG_PATH}",
+        )
 
     try:
         click_first_match(page, CART_LABELS, role="link")
+        log.info("已導向購物車頁面")
     except RuntimeError:
-        print("找不到購物車按鈕，請手動點擊購物車確認內容。")
+        log.warning("找不到購物車按鈕，請手動點擊購物車確認內容")
 
+    log.info("購物車準備完成，等待用戶手動付款並關閉瀏覽器")
     print("\n購物車已準備完成，請在瀏覽器中確認內容並手動完成付款。")
-    print("（此腳本不會自動送出付款，付款請務必由你親自點擊確認）")
-    input("完成付款後按 Enter 鍵結束程式（瀏覽器將會關閉）...")
-    browser.close()
+    print("（付款完成後直接關閉瀏覽器視窗，腳本會自動結束）")
+
+    # 等待用戶關閉瀏覽器視窗（timeout=0 = 永久等待），不依賴 TTY，
+    # 確保 cron 執行時瀏覽器不會因為 input() 的 EOFError 而立刻被關閉。
+    page.wait_for_event("close", timeout=0)
+    log.info("=== 訂餐流程結束 ===")
 
 
 def main() -> None:

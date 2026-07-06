@@ -11,11 +11,14 @@
 """
 
 import argparse
+import logging
 
 from playwright.sync_api import sync_playwright
 
 import calendar_check
 import order_agent
+
+log = order_agent._setup_logging()
 
 
 def main() -> None:
@@ -34,18 +37,29 @@ def main() -> None:
     keyword = calendar_config.get("keyword", "居家")
     calendar_id = calendar_config.get("calendar_id", "primary")
 
-    found = calendar_check.has_keyword_event_today(keyword, calendar_id)
+    log.info("=== daily_order_agent 啟動，關鍵字：「%s」===", keyword)
+
+    try:
+        found = calendar_check.has_keyword_event_today(keyword, calendar_id)
+    except Exception as exc:  # noqa: BLE001
+        log.error("Google 日曆查詢失敗（可能是 token 過期，請重新執行授權）: %s", exc)
+        order_agent.send_failure_email(
+            "Google 日曆查詢失敗",
+            f"今天 11:45 的自動訂餐檢查因 Google 日曆 API 錯誤而中止：\n\n{exc}\n\n"
+            "請執行 python daily_order_agent.py --check-only 重新觸發 OAuth 授權流程。",
+        )
+        return
 
     if not found:
-        print(f"今天的 Google 日曆沒有包含「{keyword}」的活動，不執行訂餐。")
+        log.info("今天的 Google 日曆沒有包含「%s」的活動，不執行訂餐。", keyword)
         return
 
-    print(f"偵測到今天的日曆活動包含「{keyword}」。")
+    log.info("偵測到今天的日曆活動包含「%s」。", keyword)
     if args.check_only:
-        print("（--check-only 模式，不執行訂餐）")
+        log.info("（--check-only 模式，不執行訂餐）")
         return
 
-    print("開始執行自動訂餐流程...")
+    log.info("開始執行自動訂餐流程...")
     with sync_playwright() as playwright:
         order_agent.run_order(playwright)
 
